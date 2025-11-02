@@ -1,0 +1,9 @@
+# Конфигурация анализатора зависимостей
+package_name: "requests"
+repository_url: "https://github.com/psf/requests"
+repository_mode: "remote"
+package_version: "2.31.0"
+output_image: "dependency_graph.png"
+ascii_tree_output: true
+max_depth: 3
+filter_substring: "urllib"
