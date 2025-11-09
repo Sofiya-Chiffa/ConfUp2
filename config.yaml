@@ -6,4 +6,4 @@ package_version: "2.7.0"
 output_image: "dependency_graph.png"
 ascii_tree_output: true
 max_depth: 3
-filter_substring: ""
+filter_substring: "fasterxml"

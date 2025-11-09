@@ -1,0 +1,9 @@
+# Конфигурация для тестирования для 3 этапа
+package_name: "A"
+repository_url: "test_graph.yaml"
+repository_mode: "local"
+package_version: "1.0.0"
+output_image: "cyclic_graph.png"
+ascii_tree_output: true
+max_depth: 3
+filter_substring: "B"

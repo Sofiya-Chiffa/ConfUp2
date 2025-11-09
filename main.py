@@ -1,3 +1,5 @@
+import os
+
 import yaml
 from pathlib import Path
 from urllib.request import urlopen
@@ -5,7 +7,7 @@ from urllib.error import URLError
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Optional
+from typing import Dict, List, Tuple, Any
 
 
 class Config:
@@ -102,18 +104,24 @@ def print_config(conf):
         print(f"{key}: {value}")
     print("=" * 50)
 
+
 class DependencyAnalyzer:
     def __init__(self, repo_url: str, repo_mode: str = 'remote'):
         self.repo_url = repo_url.rstrip('/')
         self.repo_mode = repo_mode
+        self.test_graph = None
 
-    def get_direct_dependencies(self, package_name, version):
-        """Получает прямые зависимости для указанного пакета и версии"""
+    def get_dependencies(self, package_name, version):
+        """Получает зависимости для указанного пакета и версии"""
         try:
             if self.repo_mode == 'remote':
                 return self._get_remote_dependencies(package_name, version)
-            else:
+            elif self.repo_mode == 'local':
                 return self._get_local_dependencies(package_name, version)
+            elif self.repo_mode == 'test':
+                return self._get_test_dependencies(package_name, version)
+            else:
+                print(f"Неподдерживаемый режим репозитория: {self.repo_mode}")
         except Exception as e:
             print(f"Ошибка при получении зависимостей: {e}")
 
@@ -140,7 +148,47 @@ class DependencyAnalyzer:
             print("Ошибка декодирования POM файла")
 
     def _get_local_dependencies(self, package_name, version):
-        print("Локальный режим пока не поддерживается")
+        """Получает зависимости из локального тестового файла"""
+        if self.test_graph is None:
+            self._load_test_graph()
+        if package_name not in self.test_graph:
+            return []
+        dependencies = []
+        for dep_name in self.test_graph[package_name]:
+            dependencies.append({
+                'groupId': dep_name,
+                'artifactId': dep_name,
+                'version': '1.0.0',
+                'scope': 'compile',
+                'type': 'jar',
+                'optional': 'false',
+                'full_name': dep_name
+            })
+        return dependencies
+
+    def _get_test_dependencies(self, package_name, version):
+        return self._get_local_dependencies(package_name, version)
+
+    def _load_test_graph(self):
+        """Загружает тестовый граф из YAML файла"""
+        try:
+            if not os.path.exists(self.repo_url):
+                print(f"Тестовый файл не найден: {self.repo_url}")
+            with open(self.repo_url, 'r', encoding='utf-8') as file:
+                graph_data = yaml.safe_load(file)
+            if not isinstance(graph_data, dict):
+                print("Тестовый файл должен содержать словарь")
+            self.test_graph = {}
+            for package, deps in graph_data.items():
+                if not isinstance(package, str):
+                    print("Ключи в тестовом файле должны быть строками")
+                if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+                    print("Значения в тестовом файле должны быть списками строк")
+                self.test_graph[package] = deps
+        except yaml.YAMLError as e:
+            print(f"Ошибка парсинга тестового YAML: {e}")
+        except IOError as e:
+            print(f"Ошибка чтения тестового файла: {e}")
 
     def _parse_pom_dependencies(self, pom_content):
         """Парсит зависимости из POM XML содержимого"""
@@ -190,7 +238,7 @@ class DependencyAnalyzer:
         valid_scopes = ['compile', 'runtime', None]
         return dependency['scope'] in valid_scopes
 
-    def format_dependencies_output(self, dependencies: List[Dict[str, str]]) -> str:
+    def format_dependencies_output(self, dependencies: List[Dict[str, str]]):
         """Форматирует вывод зависимостей для отображения"""
         if not dependencies:
             return "Прямые зависимости не найдены"
@@ -207,7 +255,103 @@ class DependencyAnalyzer:
             output.append("")
         return "\n".join(output)
 
-config = Config('config.yaml')
+
+class GraphBuilder:
+    """Класс для построения графа зависимостей с использованием BFS с рекурсией"""
+
+    def __init__(self, analyzer: Any, max_depth=3, filter_substring=""):
+        self.analyzer = analyzer
+        self.max_depth = max_depth
+        self.filter_substring = filter_substring.lower()
+        self.visited = {}
+        self.dependency_graph = {}
+        self.cyclic_dependencies = set()
+
+    def build_dependency_graph(self, root_package, root_version):
+        """Строит полный граф зависимостей"""
+        self.visited.clear()
+        self.dependency_graph.clear()
+        self.cyclic_dependencies.clear()
+        self._bfs_with_recursion([(root_package, root_version, 0)])
+        return {
+            'graph': self.dependency_graph,
+            'depths': self.visited,
+            'cyclic_dependencies': list(self.cyclic_dependencies),
+            'total_packages': len(self.dependency_graph),
+            'total_dependencies': sum(len(deps) for deps in self.dependency_graph.values())
+        }
+
+    def _bfs_with_recursion(self, queue: List[Tuple[str, str, int]]):
+        """BFS с рекурсивной обработкой зависимостей"""
+        if not queue:
+            return
+        next_level_queue = []
+        for package, version, depth in queue:
+            package_key = f"{package}:{version}"
+            if package_key in self.visited or depth >= self.max_depth:
+                continue
+            self.visited[package_key] = depth
+            try:
+                dependencies = self.analyzer.get_dependencies(package, version)
+                filtered_dependencies = self._filter_dependencies(dependencies)
+                self.dependency_graph[package_key] = [
+                    f"{dep['full_name']}:{dep['version']}" for dep in filtered_dependencies
+                ]
+                for dep in filtered_dependencies:
+                    dep_key = f"{dep['full_name']}:{dep['version']}"
+                    if dep_key in self.visited:
+                        cycle = tuple(sorted([package_key, dep_key]))
+                        self.cyclic_dependencies.add(cycle)
+                        continue
+                    next_level_queue.append((dep['full_name'], dep['version'], depth + 1))
+            except Exception as e:
+                self.dependency_graph[package_key] = []
+        self._bfs_with_recursion(next_level_queue)
+
+    def _filter_dependencies(self, dependencies):
+        """Фильтрует зависимости по подстроке"""
+        if not self.filter_substring:
+            return dependencies
+        filtered = []
+        for dep in dependencies:
+            if self.filter_substring not in dep['full_name'].lower():
+                filtered.append(dep)
+        return filtered
+
+    def format_graph_output(self, graph_data: Dict[str, Any]) -> str:
+        """Форматирует вывод графа зависимостей"""
+        graph = graph_data['graph']
+        depths = graph_data['depths']
+        cyclic_deps = graph_data['cyclic_dependencies']
+        output = []
+        output.append("=== ГРАФ ЗАВИСИМОСТЕЙ ===")
+        output.append(f"Всего пакетов: {graph_data['total_packages']}")
+        output.append(f"Всего зависимостей: {graph_data['total_dependencies']}")
+        output.append(f"Циклические зависимости: {len(cyclic_deps)}")
+        output.append("")
+        if cyclic_deps:
+            output.append("Обнаружены циклические зависимости:")
+            for cycle in cyclic_deps:
+                output.append(f"  Цикл: {cycle[0]} <-> {cycle[1]}")
+            output.append("")
+        output.append("Структура графа:")
+        output.append("-" * 50)
+        sorted_packages = sorted(graph.keys(), key=lambda p: depths.get(p, 0))
+        for package in sorted_packages:
+            depth = depths.get(package, 0)
+            dependencies = graph[package]
+            output.append(f"{package} (глубина: {depth})")
+            if dependencies:
+                for dep in dependencies:
+                    dep_depth = depths.get(dep, self.max_depth)
+                    output.append(f"   └── {dep} (глубина: {dep_depth})")
+            else:
+                output.append("   └── (нет зависимостей)")
+            output.append("")
+        return "\n".join(output)
+
+
+config = Config('test_config.yaml')
 config.load_config()
 print_config(config)
 
@@ -215,12 +359,28 @@ analyzer = DependencyAnalyzer(
     repo_url=config.repository_url,
     repo_mode=config.repository_mode
 )
-
 print(f"Анализ зависимостей для пакета: {config.package_name}:{config.package_version}")
 print(f"Репозиторий: {config.repository_url}")
 print()
-dependencies = analyzer.get_direct_dependencies(
+dependencies = analyzer.get_dependencies(
     package_name=config.package_name,
     version=config.package_version
 )
 print(analyzer.format_dependencies_output(dependencies))
+
+graph_builder = GraphBuilder(
+    analyzer=analyzer,
+    max_depth=config.max_depth,
+    filter_substring=config.filter_substring
+)
+print(f"Анализ зависимостей для пакета: {config.package_name}:{config.package_version}")
+print(f"Режим: {config.repository_mode}")
+print(f"Максимальная глубина: {config.max_depth}")
+if config.filter_substring:
+    print(f"Фильтр: '{config.filter_substring}'")
+print()
+graph_data = graph_builder.build_dependency_graph(
+    root_package=config.package_name,
+    root_version=config.package_version
+)
+print(graph_builder.format_graph_output(graph_data))
