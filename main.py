@@ -266,6 +266,7 @@ class GraphBuilder:
         self.visited = {}
         self.dependency_graph = {}
         self.cyclic_dependencies = set()
+        self.load_order = []
 
     def build_dependency_graph(self, root_package, root_version):
         """Строит полный граф зависимостей"""
@@ -278,7 +279,8 @@ class GraphBuilder:
             'depths': self.visited,
             'cyclic_dependencies': list(self.cyclic_dependencies),
             'total_packages': len(self.dependency_graph),
-            'total_dependencies': sum(len(deps) for deps in self.dependency_graph.values())
+            'total_dependencies': sum(len(deps) for deps in self.dependency_graph.values()),
+            'load_order': self.load_order
         }
 
     def _bfs_with_recursion(self, queue: List[Tuple[str, str, int]]):
@@ -291,6 +293,7 @@ class GraphBuilder:
             if package_key in self.visited or depth >= self.max_depth:
                 continue
             self.visited[package_key] = depth
+            self.load_order.append(package_key)
             try:
                 dependencies = self.analyzer.get_dependencies(package, version)
                 filtered_dependencies = self._filter_dependencies(dependencies)
@@ -323,6 +326,7 @@ class GraphBuilder:
         graph = graph_data['graph']
         depths = graph_data['depths']
         cyclic_deps = graph_data['cyclic_dependencies']
+        load_order = graph_data['load_order']
         output = []
         output.append("=== ГРАФ ЗАВИСИМОСТЕЙ ===")
         output.append(f"Всего пакетов: {graph_data['total_packages']}")
@@ -336,6 +340,15 @@ class GraphBuilder:
             output.append("")
         output.append("Структура графа:")
         output.append("-" * 50)
+
+        output.append("Порядок загрузки зависимостей (BFS):")
+        for i, package in enumerate(load_order, 1):
+            output.append(f"  {i}. {package}")
+        output.append("")
+
+        output.append("Структура графа:")
+        output.append("-" * 50)
+
         sorted_packages = sorted(graph.keys(), key=lambda p: depths.get(p, 0))
         for package in sorted_packages:
             depth = depths.get(package, 0)
