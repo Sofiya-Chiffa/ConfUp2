@@ -1,5 +1,3 @@
-import os
-
 import yaml
 from pathlib import Path
 from urllib.request import urlopen
@@ -7,7 +5,9 @@ from urllib.error import URLError
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Set, Tuple, Any
+import graphviz
+import os
 
 
 class Config:
@@ -70,6 +70,9 @@ class Config:
             return
         if not isinstance(config_data['max_depth'], int) or config_data['max_depth'] < 1:
             print("max_depth должен быть целым числом больше 0")
+            return
+        if not isinstance(config_data['ascii_tree_output'], bool):
+            print("ascii_tree должен быть булевым значением (true/false)")
             return
         self.package_name = config_data['package_name']
         self.repository_url = config_data['repository_url']
@@ -363,8 +366,90 @@ class GraphBuilder:
             output.append("")
         return "\n".join(output)
 
+    def generate_graphviz_dot(self, graph_data: Dict[str, Any]):
+        """Генерирует представление графа на языке Graphviz DOT"""
+        graph = graph_data['graph']
+        cyclic_deps = graph_data['cyclic_dependencies']
+        dot_lines = []
+        dot_lines.append("digraph Dependencies {")
+        dot_lines.append("    rankdir=TB;")
+        dot_lines.append("    node [shape=box, style=filled, fillcolor=lightblue];")
+        dot_lines.append("    edge [color=darkgreen];")
+        dot_lines.append("")
+        for package in graph.keys():
+            dot_lines.append(f'    "{package}";')
+        dot_lines.append("")
+        for package, dependencies in graph.items():
+            for dep in dependencies:
+                dot_lines.append(f'    "{package}" -> "{dep}";')
+        if cyclic_deps:
+            dot_lines.append("")
+            dot_lines.append("    // Циклические зависимости")
+            dot_lines.append('    edge [color=red];')
+            for cycle in cyclic_deps:
+                dot_lines.append(f'    "{cycle[0]}" -> "{cycle[1]}" [color=red];')
+        dot_lines.append("}")
+        return "\n".join(dot_lines)
 
-config = Config('test_config.yaml')
+    def save_graphviz_image(self, graph_data: Dict[str, Any], output_file: str) -> bool:
+        """Сохраняет граф в файл SVG используя Python graphviz"""
+        try:
+            dot_content = self.generate_graphviz_dot(graph_data)
+            dot_file = output_file.replace('.svg', '.dot')
+            with open(dot_file, 'w', encoding='utf-8') as f:
+                f.write(dot_content)
+            print(f"Файл Graphviz DOT сохранен: {dot_file}")
+            graphviz_bin = r"C:\Program Files\Graphviz\bin"
+            if os.path.exists(graphviz_bin):
+                os.environ["PATH"] = graphviz_bin + os.pathsep + os.environ.get("PATH", "")
+                print(f"Добавлен путь к Graphviz: {graphviz_bin}")
+            dot_graph = graphviz.Source(dot_content)
+            dot_graph.render(
+                filename=output_file.replace('.svg', ''),
+                format='svg',
+                cleanup=True
+            )
+            print(f"Изображение графа сохранено: {output_file}")
+            return True
+        except ImportError:
+            print("Установите Python package: pip install graphviz")
+            return False
+        except Exception as e:
+            print(f"Ошибка при сохранении графа: {e}")
+            print("Убедитесь, что Graphviz установлен по пути: C:\\Program Files\\Graphviz\\bin")
+            return False
+
+    def generate_ascii_tree(self, graph_data: Dict[str, Any], root_package, root_version):
+        """Генерирует ASCII-дерево зависимостей"""
+        graph = graph_data['graph']
+        root_key = f"{root_package}:{root_version}"
+
+        def build_tree(node: str, visited: Set[str] = None, prefix: str = "", is_last: bool = True) -> List[str]:
+            if visited is None:
+                visited = set()
+            if node in visited:
+                return [f"{prefix}└── {node} 🔁 (цикл)"]
+            visited.add(node)
+            lines = [f"{prefix}{'└── ' if is_last else '├── '}{node}"]
+            children = graph.get(node, [])
+            child_count = len(children)
+            for i, child in enumerate(children):
+                child_prefix = prefix + ("    " if is_last else "│   ")
+                child_is_last = i == child_count - 1
+                if child in visited:
+                    lines.extend(build_tree(child, visited.copy(), child_prefix, child_is_last))
+                else:
+                    lines.extend(build_tree(child, visited.copy(), child_prefix, child_is_last))
+            return lines
+
+        try:
+            tree_lines = build_tree(root_key)
+            return "ASCII-дерево зависимостей:\n" + "\n".join(tree_lines)
+        except RecursionError:
+            return "Ошибка: слишком глубокая рекурсия для построения дерева"
+
+
+config = Config('config.yaml')
 config.load_config()
 print_config(config)
 
@@ -397,3 +482,15 @@ graph_data = graph_builder.build_dependency_graph(
     root_version=config.package_version
 )
 print(graph_builder.format_graph_output(graph_data))
+
+if graph_builder.save_graphviz_image(graph_data, config.output_image):
+    print("✓ Визуализация графа создана успешно")
+else:
+    print("✗ Не удалось создать визуализацию графа")
+
+if config.ascii_tree_output:
+    print("\n" + "=" * 50)
+    ascii_tree = graph_builder.generate_ascii_tree(
+        graph_data, config.package_name, config.package_version
+    )
+    print(ascii_tree)
